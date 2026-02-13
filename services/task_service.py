@@ -8,7 +8,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from models.task_model import create_task, delete_task, get_all_tasks, get_tasks_by_status, update_task_status
+from models.task_model import (
+    create_task,
+    delete_task,
+    get_all_tasks,
+    get_task_by_id,
+    get_tasks_by_status,
+    update_execution_score,
+    update_task_status,
+)
+
+from services.scoring_service import calculate_execution_score
 
 
 def generate_formatted_title(project: str, module: str, layer: str, title_raw: str) -> str:
@@ -68,6 +78,8 @@ def create_task_with_formatting(data: dict[str, Any]) -> int:
         if payload.get(key) in (None, ""):
             raise ValueError(f"Missing required field: {key}")
 
+    payload["execution_score"] = calculate_execution_score(payload)
+
     return create_task(payload)
 
 
@@ -82,7 +94,18 @@ def list_tasks(status: str | None = None) -> list[dict[str, Any]]:
 def set_task_status(task_id: int, status: str) -> int:
     """Update task status and updated_at."""
 
-    return update_task_status(task_id=task_id, status=status, updated_at=_utc_now_iso())
+    updated = update_task_status(task_id=task_id, status=status, updated_at=_utc_now_iso())
+    if updated == 0:
+        return 0
+
+    task = get_task_by_id(task_id)
+    if task is None:
+        return updated
+
+    score = calculate_execution_score(task)
+    update_execution_score(task_id, score)
+
+    return updated
 
 
 def remove_task(task_id: int) -> int:

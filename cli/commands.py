@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from services.scoring_service import recalculate_all_scores
 from services.task_service import create_task_with_formatting, list_tasks, remove_task, set_task_status
 
 
@@ -21,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_task_list(task_subparsers)
     _add_task_update_status(task_subparsers)
     _add_task_delete(task_subparsers)
+    _add_task_focus(task_subparsers)
+    _add_task_recalculate_score(task_subparsers)
 
     return parser
 
@@ -63,6 +66,18 @@ def _add_task_delete(task_subparsers: argparse._SubParsersAction) -> None:
     p = task_subparsers.add_parser("delete", help="Delete a task")
     p.add_argument("--id", required=True, type=int)
     p.set_defaults(func=_cmd_task_delete)
+
+
+def _add_task_focus(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser("focus", help="Show top 3 tasks by execution score")
+    p.set_defaults(func=_cmd_task_focus)
+
+
+def _add_task_recalculate_score(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser(
+        "recalculate-score", help="Recalculate execution score for all tasks"
+    )
+    p.set_defaults(func=_cmd_task_recalculate_score)
 
 
 def run_cli(argv: list[str] | None = None) -> int:
@@ -134,4 +149,30 @@ def _cmd_task_delete(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Deleted task id={args.id}")
+    return 0
+
+
+def _cmd_task_focus(args: argparse.Namespace) -> int:
+    tasks = list_tasks()
+    tasks = [t for t in tasks if str(t.get("status") or "").lower() != "done"]
+    tasks.sort(key=lambda t: float(t.get("execution_score") or 0), reverse=True)
+    top = tasks[:3]
+
+    if not top:
+        print("No tasks found.")
+        return 0
+
+    for t in top:
+        due = t.get("due_date") or "-"
+        score = float(t.get("execution_score") or 0)
+        print(
+            f"{t['id']}\t{t['title_generated']}\t{t['status']}\t{due}\t{score}"
+        )
+
+    return 0
+
+
+def _cmd_task_recalculate_score(args: argparse.Namespace) -> int:
+    updated = recalculate_all_scores()
+    print(f"Recalculated execution_score for {updated} tasks.")
     return 0

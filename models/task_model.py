@@ -79,6 +79,15 @@ def get_tasks_by_status(status: str) -> list[dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_task_by_id(task_id: int) -> dict[str, Any] | None:
+    """Return a single task by id, or None if not found."""
+
+    with get_connection() as conn:
+        cur = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
 def update_task_status(task_id: int, status: str, updated_at: str) -> int:
     """Update a task status; returns number of affected rows."""
 
@@ -86,6 +95,18 @@ def update_task_status(task_id: int, status: str, updated_at: str) -> int:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
             (status, updated_at, task_id),
+        )
+        conn.commit()
+        return int(cur.rowcount)
+
+
+def update_execution_score(task_id: int, score: float) -> int:
+    """Update a task execution_score; returns number of affected rows."""
+
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE tasks SET execution_score = ? WHERE id = ?",
+            (float(score), task_id),
         )
         conn.commit()
         return int(cur.rowcount)
