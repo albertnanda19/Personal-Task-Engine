@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from bot.discord_client import send_message
 from services.scoring_service import recalculate_all_scores
 from services.summary_service import get_dashboard_summary, get_weekly_report
 from services.task_service import create_task_with_formatting, list_tasks, remove_task, set_task_status
@@ -27,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_task_recalculate_score(task_subparsers)
     _add_task_summary(task_subparsers)
     _add_task_weekly_report(task_subparsers)
+    _add_task_send_summary(task_subparsers)
+    _add_task_send_focus(task_subparsers)
+    _add_task_send_weekly(task_subparsers)
 
     return parser
 
@@ -93,6 +97,73 @@ def _add_task_weekly_report(task_subparsers: argparse._SubParsersAction) -> None
         "weekly-report", help="Show weekly performance report (last 7 days)"
     )
     p.set_defaults(func=_cmd_task_weekly_report)
+
+
+def _add_task_send_summary(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser(
+        "send-summary", help="Send dashboard summary to Discord"
+    )
+    p.set_defaults(func=_cmd_task_send_summary)
+
+
+def _add_task_send_focus(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser(
+        "send-focus", help="Send focus (top 3 tasks) to Discord"
+    )
+    p.set_defaults(func=_cmd_task_send_focus)
+
+
+def _add_task_send_weekly(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser(
+        "send-weekly", help="Send weekly performance report to Discord"
+    )
+    p.set_defaults(func=_cmd_task_send_weekly)
+
+
+def _format_dashboard_message(summary: dict[str, Any]) -> str:
+    avg = float(summary.get("average_execution_score") or 0)
+    lines = [
+        "PERSONAL TASK DASHBOARD",
+        "-----------------------",
+        f"Todo: {summary.get('total_todo', 0)}",
+        f"Doing: {summary.get('total_doing', 0)}",
+        f"Done: {summary.get('total_done', 0)}",
+        f"Overdue: {summary.get('total_overdue', 0)}",
+        f"Average Score: {avg:.1f}",
+    ]
+    return "\n".join(lines)
+
+
+def _format_focus_message(tasks: list[dict[str, Any]]) -> str:
+    lines = ["FOCUS TODAY", "-----------"]
+    if not tasks:
+        lines.append("(none)")
+        return "\n".join(lines)
+
+    for idx, t in enumerate(tasks, start=1):
+        score = float(t.get("execution_score") or 0)
+        due = t.get("due_date") or "-"
+        lines.append(
+            f"{idx}. [ID {t['id']}] {t['title_generated']} Score: {score:.0f} Due: {due}"
+        )
+    return "\n".join(lines)
+
+
+def _format_weekly_message(report: dict[str, Any]) -> str:
+    avg_days = float(report.get("average_completion_time_days") or 0)
+    most_common_priority = report.get("most_common_priority")
+    most_common_type = report.get("most_common_type")
+
+    lines = [
+        "WEEKLY PERFORMANCE REPORT",
+        "-------------------------",
+        f"Tasks Completed (7d): {report.get('tasks_completed_7d', 0)}",
+        f"Story Points Completed: {report.get('story_points_completed_7d', 0)}",
+        f"Average Completion Time: {avg_days:.1f} days",
+        f"Most Common Priority: {most_common_priority.title() if most_common_priority else '-'}",
+        f"Most Common Type: {most_common_type.title() if most_common_type else '-'}",
+    ]
+    return "\n".join(lines)
 
 
 def run_cli(argv: list[str] | None = None) -> int:
@@ -246,3 +317,30 @@ def _cmd_task_weekly_report(args: argparse.Namespace) -> int:
     print(f"Most Common Type: {most_common_type.title() if most_common_type else '-'}")
 
     return 0
+
+
+def _cmd_task_send_summary(args: argparse.Namespace) -> int:
+    summary = get_dashboard_summary()
+    message = _format_dashboard_message(summary)
+    ok = send_message(message)
+    print("Sent." if ok else "Failed to send.")
+    return 0 if ok else 1
+
+
+def _cmd_task_send_focus(args: argparse.Namespace) -> int:
+    tasks = list_tasks()
+    tasks = [t for t in tasks if str(t.get("status") or "").lower() != "done"]
+    tasks.sort(key=lambda t: float(t.get("execution_score") or 0), reverse=True)
+    top = tasks[:3]
+    message = _format_focus_message(top)
+    ok = send_message(message)
+    print("Sent." if ok else "Failed to send.")
+    return 0 if ok else 1
+
+
+def _cmd_task_send_weekly(args: argparse.Namespace) -> int:
+    report = get_weekly_report()
+    message = _format_weekly_message(report)
+    ok = send_message(message)
+    print("Sent." if ok else "Failed to send.")
+    return 0 if ok else 1

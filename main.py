@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from cli.commands import run_cli
+from bot.scheduler import run_daily_scheduler
 from database.schema import init_db
 
 
@@ -12,6 +13,15 @@ def main(argv: list[str] | None = None) -> int:
     """Initialize DB and run CLI."""
 
     init_db()
+    argv = argv or []
+
+    if len(argv) >= 2 and argv[0] == "bot" and argv[1] == "run":
+        try:
+            run_daily_scheduler()
+        except KeyboardInterrupt:
+            print("Scheduler stopped.")
+        return 0
+
     return run_cli(argv)
 
 
