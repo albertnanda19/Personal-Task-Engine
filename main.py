@@ -27,15 +27,6 @@ def main(argv: list[str] | None = None) -> int:
 
     init_db()
 
-    if len(argv) >= 2 and argv[0] == "bot" and argv[1] == "run":
-        try:
-            from bot.scheduler import run_daily_scheduler
-
-            run_daily_scheduler()
-        except KeyboardInterrupt:
-            print("Scheduler stopped.")
-        return 0
-
     from cli.commands import run_cli
 
     return run_cli(argv)

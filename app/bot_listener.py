@@ -21,6 +21,7 @@ import urllib.request
 
 from app.commands import parse_add_command
 from app.db import get_task_for_bot, insert_task, list_tasks_for_bot, update_task_status_for_bot
+from app.startup_report import build_startup_report_message
 from app.ui import build_box, truncate_discord
 from bot.discord_client import load_env
 
@@ -364,6 +365,13 @@ def run_polling_bot() -> None:
     if not token or not channel_id or not user_id:
         print("Missing DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID / DISCORD_USER_ID (env or .env).")
         return
+
+    # Startup report (send once per process start)
+    try:
+        report = build_startup_report_message()
+        _reply(channel_id, token, report, logger)
+    except Exception as e:
+        logger.exception("Failed sending startup report: %s", e)
 
     last_processed_id = _read_last_message_id()
     logger.info("Starting bot listener. last_processed_id=%s", last_processed_id)
