@@ -6,6 +6,7 @@ import argparse
 from typing import Any
 
 from services.scoring_service import recalculate_all_scores
+from services.summary_service import get_dashboard_summary, get_weekly_report
 from services.task_service import create_task_with_formatting, list_tasks, remove_task, set_task_status
 
 
@@ -24,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_task_delete(task_subparsers)
     _add_task_focus(task_subparsers)
     _add_task_recalculate_score(task_subparsers)
+    _add_task_summary(task_subparsers)
+    _add_task_weekly_report(task_subparsers)
 
     return parser
 
@@ -78,6 +81,18 @@ def _add_task_recalculate_score(task_subparsers: argparse._SubParsersAction) -> 
         "recalculate-score", help="Recalculate execution score for all tasks"
     )
     p.set_defaults(func=_cmd_task_recalculate_score)
+
+
+def _add_task_summary(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser("summary", help="Show productivity dashboard")
+    p.set_defaults(func=_cmd_task_summary)
+
+
+def _add_task_weekly_report(task_subparsers: argparse._SubParsersAction) -> None:
+    p = task_subparsers.add_parser(
+        "weekly-report", help="Show weekly performance report (last 7 days)"
+    )
+    p.set_defaults(func=_cmd_task_weekly_report)
 
 
 def run_cli(argv: list[str] | None = None) -> int:
@@ -175,4 +190,59 @@ def _cmd_task_focus(args: argparse.Namespace) -> int:
 def _cmd_task_recalculate_score(args: argparse.Namespace) -> int:
     updated = recalculate_all_scores()
     print(f"Recalculated execution_score for {updated} tasks.")
+    return 0
+
+
+def _cmd_task_summary(args: argparse.Namespace) -> int:
+    summary = get_dashboard_summary()
+
+    print("PERSONAL TASK DASHBOARD")
+    print("-----------------------")
+    print("")
+
+    print(f"Total tasks: {summary['total_tasks']}")
+    print(f"Todo: {summary['total_todo']}")
+    print(f"Doing: {summary['total_doing']}")
+    print(f"Done: {summary['total_done']}")
+    print(f"Overdue: {summary['total_overdue']}")
+    print(f"Average Execution Score: {summary['average_execution_score']:.1f}")
+    print("")
+
+    print("Top 3 Focus:")
+    top_3 = summary.get("top_3") or []
+    if not top_3:
+        print("(none)")
+    else:
+        for idx, t in enumerate(top_3, start=1):
+            score = float(t.get("execution_score") or 0)
+            print(f"{idx}. [ID {t['id']}] {t['title_generated']} Score: {score:.0f}")
+
+    print("")
+    print("Oldest Todo:")
+    oldest = summary.get("oldest_todo")
+    if not oldest:
+        print("(none)")
+    else:
+        created_at = oldest.get("created_at") or "-"
+        print(f"[ID {oldest['id']}] {oldest['title_generated']} Created at: {created_at}")
+
+    return 0
+
+
+def _cmd_task_weekly_report(args: argparse.Namespace) -> int:
+    report = get_weekly_report()
+
+    print("WEEKLY PERFORMANCE REPORT")
+    print("-------------------------")
+    print("")
+
+    print(f"Tasks Completed (7d): {report['tasks_completed_7d']}")
+    print(f"Story Points Completed: {report['story_points_completed_7d']}")
+    print(f"Average Completion Time: {report['average_completion_time_days']:.1f} days")
+
+    most_common_priority = report.get("most_common_priority")
+    most_common_type = report.get("most_common_type")
+    print(f"Most Common Priority: {most_common_priority.title() if most_common_priority else '-'}")
+    print(f"Most Common Type: {most_common_type.title() if most_common_type else '-'}")
+
     return 0
