@@ -61,9 +61,14 @@ def _task_card(task: dict) -> str:
     project = truncate(task.get("project") or "-", 20)
     task_type = truncate(task.get("type") or "-", 12)
     title = truncate(task.get("title_raw") or "", 60)
+    desc_raw = (task.get("description") or "").strip()
+    desc = truncate(desc_raw, 80) if desc_raw else ""
 
     line1 = f"🆔 {tid} | {pr_emoji} {pr_label} | 📦 {project} | 🏷️ {task_type}"
     line2 = f"{st_emoji} {st_label:<11} {title}"
+    if desc:
+        line3 = f"📝 {desc}"
+        return "\n".join([line1, line2, line3])
     return "\n".join([line1, line2])
 
 

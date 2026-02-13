@@ -57,6 +57,12 @@ sudo systemctl enable taskbot
 sudo systemctl start taskbot
 ```
 
+Restart:
+
+```bash
+sudo systemctl restart taskbot.service
+```
+
 Check status:
 
 ```bash
