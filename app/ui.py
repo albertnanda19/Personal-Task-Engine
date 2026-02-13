@@ -1,5 +1,5 @@
 def build_box(title: str, body: str) -> str:
-    sep = "━━━━━━━━━━━━━━━━━━━━━━"
+    sep = "━━━━━━━━━━━━━━━━━━━━━━━━━━"
     return "\n".join([sep, title, sep, "", body, "", sep])
 
 

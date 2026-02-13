@@ -141,3 +141,86 @@ def list_tasks_for_bot(status: str | None, limit: int = 20) -> list[dict]:
                 (status, limit),
             )
         return [dict(r) for r in cur.fetchall()]
+
+
+def list_tasks_paginated_for_bot(
+    *,
+    kind: str,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict], dict]:
+    """List tasks for bot with pagination + totals.
+
+    kind:
+        - all
+        - active (todo + in_progress)
+        - done
+        - today (created_at date = today)
+        - todo
+        - progress (in_progress)
+    """
+
+    kind = str(kind or "").lower().strip()
+    page = int(page)
+    page_size = int(page_size)
+    if page <= 0:
+        page = 1
+    if page_size <= 0:
+        page_size = 15
+
+    offset = (page - 1) * page_size
+
+    today_ymd = datetime.now().date().isoformat()
+
+    where = ""
+    params: list = []
+    if kind == "all":
+        where = ""
+    elif kind == "active":
+        where = "WHERE status IN ('todo','in_progress')"
+    elif kind == "done":
+        where = "WHERE status = 'done'"
+    elif kind == "today":
+        where = "WHERE substr(created_at, 1, 10) = ?"
+        params.append(today_ymd)
+    elif kind == "todo":
+        where = "WHERE status = 'todo'"
+    elif kind == "progress":
+        where = "WHERE status = 'in_progress'"
+    else:
+        where = ""
+
+    with get_connection() as conn:
+        cur = conn.execute(
+            f"SELECT * FROM tasks {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            tuple(params + [page_size, offset]),
+        )
+        tasks = [dict(r) for r in cur.fetchall()]
+
+        # Totals used for summary footer. Keep DB logic unchanged: only counting.
+        cur_a = conn.execute(
+            "SELECT COUNT(1) FROM tasks WHERE status IN ('todo','in_progress')"
+        )
+        total_active = int(cur_a.fetchone()[0])
+
+        cur_d = conn.execute("SELECT COUNT(1) FROM tasks WHERE status = 'done'")
+        total_completed = int(cur_d.fetchone()[0])
+
+        cur_all = conn.execute("SELECT COUNT(1) FROM tasks")
+        total_all = int(cur_all.fetchone()[0])
+
+        cur_kind = conn.execute(
+            f"SELECT COUNT(1) FROM tasks {where}",
+            tuple(params),
+        )
+        total_kind = int(cur_kind.fetchone()[0])
+
+    meta = {
+        "page": page,
+        "page_size": page_size,
+        "total_kind": total_kind,
+        "total_active": total_active,
+        "total_completed": total_completed,
+        "total_all": total_all,
+    }
+    return tasks, meta

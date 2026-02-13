@@ -20,7 +20,14 @@ import urllib.request
 
 
 from app.commands import parse_add_command
-from app.db import get_task_for_bot, insert_task, list_tasks_for_bot, update_task_status_for_bot
+from app.db import (
+    get_task_for_bot,
+    insert_task,
+    list_tasks_for_bot,
+    list_tasks_paginated_for_bot,
+    update_task_status_for_bot,
+)
+from app.list_renderer import render_task_list
 from app.startup_report import build_startup_report_message
 from app.ui import build_box, truncate_discord
 from bot.discord_client import load_env
@@ -438,26 +445,85 @@ def run_polling_bot() -> None:
                                 _reply(channel_id, token, _format_error(user_id), logger)
                     elif cmd_line.startswith("!list"):
                         parts = cmd_line.split()
-                        if len(parts) != 2:
+                        if len(parts) not in (2, 3):
                             _reply(channel_id, token, _format_error(user_id), logger)
                         else:
-                            arg = parts[1].strip().lower()
-                            if arg == "all":
-                                tasks = list_tasks_for_bot(status=None, limit=20)
-                                _reply(channel_id, token, _format_list(user_id, "ALL", tasks), logger)
-                            elif arg == "todo":
-                                tasks = list_tasks_for_bot(status="todo", limit=20)
-                                _reply(channel_id, token, _format_list(user_id, "TODO", tasks), logger)
-                            elif arg == "progress":
-                                tasks = list_tasks_for_bot(status="in_progress", limit=20)
-                                _reply(
-                                    channel_id, token, _format_list(user_id, "IN PROGRESS", tasks), logger
-                                )
-                            elif arg == "done":
-                                tasks = list_tasks_for_bot(status="done", limit=20)
-                                _reply(channel_id, token, _format_list(user_id, "DONE", tasks), logger)
+                            kind = parts[1].strip().lower()
+                            page = 1
+                            if len(parts) == 3:
+                                try:
+                                    page = int(parts[2])
+                                except Exception:
+                                    page = 1
+
+                            # Normalize kinds/aliases
+                            if kind == "progress":
+                                kind_norm = "progress"
+                                title = "PROGRESS"
+                            elif kind == "in_progress":
+                                kind_norm = "progress"
+                                title = "PROGRESS"
+                            elif kind == "all":
+                                kind_norm = "all"
+                                title = "ALL"
+                            elif kind == "active":
+                                kind_norm = "active"
+                                title = "ACTIVE"
+                            elif kind == "done":
+                                kind_norm = "done"
+                                title = "DONE"
+                            elif kind == "today":
+                                kind_norm = "today"
+                                title = "TODAY"
+                            elif kind == "todo":
+                                kind_norm = "todo"
+                                title = "TODO"
                             else:
                                 _reply(channel_id, token, _format_error(user_id), logger)
+                                kind_norm = ""
+                                title = ""
+
+                            if kind_norm:
+                                tasks, meta = list_tasks_paginated_for_bot(
+                                    kind=kind_norm,
+                                    page=page,
+                                    page_size=15,
+                                )
+
+                                group = bool(kind_norm == "all" and int(meta.get("total_kind") or 0) > 5)
+
+                                total_label = None
+                                if title == "ACTIVE":
+                                    total_label = "Total Active"
+                                elif title == "DONE":
+                                    total_label = "Total Completed"
+                                elif title == "TODAY":
+                                    total_label = "Total Today"
+                                elif title == "TODO":
+                                    total_label = "Total Todo"
+                                elif title == "PROGRESS":
+                                    total_label = "Total In Progress"
+
+                                rendered = render_task_list(
+                                    tasks=tasks,
+                                    title=title,
+                                    group_by_status=group,
+                                    page=int(meta.get("page") or 1),
+                                    page_size=int(meta.get("page_size") or 15),
+                                    total_active=int(meta.get("total_active") or 0)
+                                    if title in ("ALL", "ACTIVE")
+                                    else None,
+                                    total_completed=int(meta.get("total_completed") or 0)
+                                    if title in ("ALL", "DONE")
+                                    else None,
+                                    total_all=int(meta.get("total_all") or 0) if title == "ALL" else None,
+                                    total_label=total_label,
+                                    total_value=int(meta.get("total_kind") or 0),
+                                    kind_for_hint=kind_norm,
+                                )
+
+                                msg = truncate_discord(_mention_prefix(user_id) + rendered)
+                                _reply(channel_id, token, msg, logger)
                     elif cmd_line.startswith("!progress") or cmd_line.startswith("!done") or cmd_line.startswith("!todo"):
                         parts = cmd_line.split()
                         if len(parts) != 2:
