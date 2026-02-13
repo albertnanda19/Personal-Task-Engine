@@ -12,15 +12,10 @@ Environment variables:
 A minimal .env loader is included to support local development.
 """
 
-from __future__ import annotations
-
 import json
 import os
-import time
-import urllib.error
+from datetime import datetime, timezone
 import urllib.request
-from pathlib import Path
-from typing import Any
 
 
 _ENV_FILENAME = ".env"
@@ -36,13 +31,16 @@ def load_env() -> None:
     - does not override variables already set in the environment
     """
 
-    project_root = Path(__file__).resolve().parent.parent
-    env_path = project_root / _ENV_FILENAME
-    if not env_path.exists():
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(project_root, _ENV_FILENAME)
+    if not os.path.exists(env_path):
         return
 
     try:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        for raw_line in lines:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -61,6 +59,19 @@ def load_env() -> None:
             os.environ[key] = value
     except OSError as exc:
         print(f"Failed to read .env: {exc}")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _sleep_seconds(seconds: float) -> None:
+    seconds = float(seconds)
+    if seconds <= 0:
+        return
+    end = _utc_now().timestamp() + seconds
+    while _utc_now().timestamp() < end:
+        pass
 
 
 def _get_credentials() -> tuple[str | None, str | None]:
@@ -89,7 +100,7 @@ def send_message(content: str) -> bool:
 
     user_agent = "personal_task_engine/1.0 (+https://github.com/)"
 
-    def _attempt() -> tuple[bool, int | None, dict[str, Any] | None, str | None]:
+    def _attempt() -> tuple[bool, int | None, dict | None, str | None]:
         req = urllib.request.Request(
             url,
             data=payload,
@@ -114,16 +125,7 @@ def send_message(content: str) -> bool:
                         data = None
 
                 return 200 <= status < 300, status, data, body
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-            data = None
-            if body:
-                try:
-                    data = json.loads(body)
-                except json.JSONDecodeError:
-                    data = None
-            return False, int(e.code), data, body
-        except urllib.error.URLError as e:
+        except Exception as e:
             print(f"Discord request failed: {e}")
             return False, None, None, None
 
@@ -131,30 +133,20 @@ def send_message(content: str) -> bool:
     if ok:
         return True
 
-    if status == 429:
-        retry_after = 0
-        if isinstance(data, dict) and data.get("retry_after") is not None:
-            try:
-                retry_after = float(data.get("retry_after"))
-            except (TypeError, ValueError):
-                retry_after = 0
-        if retry_after > 0:
-            time.sleep(retry_after)
-        else:
-            time.sleep(1)
+    # Without urllib.error, we cannot reliably inspect HTTP status codes.
+    # Best-effort fallback: if Discord returns a JSON body that includes retry_after, wait and retry once.
+    if isinstance(data, dict) and data.get("retry_after") is not None:
+        try:
+            retry_after = float(data.get("retry_after") or 0)
+        except (TypeError, ValueError):
+            retry_after = 0
+        _sleep_seconds(retry_after if retry_after > 0 else 1)
 
-        ok2, status2, _data2, body2 = _attempt()
+        ok2, _status2, _data2, _body2 = _attempt()
         if ok2:
             return True
 
-        print(f"Discord rate-limited retry failed (status={status2}).")
-        if body2:
-            print(body2)
-        return False
-
-    if status is not None:
-        print(f"Discord API error: status={status}")
-        if body:
-            body_preview = body if len(body) <= 800 else body[:800] + "..."
-            print(body_preview)
+    if body:
+        body_preview = body if len(body) <= 800 else body[:800] + "..."
+        print(body_preview)
     return False

@@ -1,20 +1,17 @@
 """Database schema initialization and lightweight migrations."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+import os
 
 from database.connection import get_connection
 
 
-@dataclass(frozen=True)
 class MigrationStatus:
     """Status info for migrations."""
 
-    applied: list[str]
-    pending: list[str]
+    def __init__(self, applied: list[str], pending: list[str]) -> None:
+        self.applied = applied
+        self.pending = pending
 
 
 def _utc_now_iso() -> str:
@@ -37,17 +34,25 @@ def ensure_migrations_table() -> None:
         conn.commit()
 
 
-def _migrations_dir() -> Path:
-    return Path(__file__).resolve().parent / "migrations"
+def _migrations_dir() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "migrations")
 
 
-def _list_migration_files() -> list[Path]:
+def _list_migration_files() -> list[str]:
     migrations_dir = _migrations_dir()
-    if not migrations_dir.exists():
+    if not os.path.isdir(migrations_dir):
         return []
 
-    files = [p for p in migrations_dir.iterdir() if p.is_file() and p.suffix == ".sql"]
-    files.sort(key=lambda p: p.name)
+    files: list[str] = []
+    for name in os.listdir(migrations_dir):
+        if not name.lower().endswith(".sql"):
+            continue
+        full = os.path.join(migrations_dir, name)
+        if os.path.isfile(full):
+            files.append(full)
+
+    files.sort(key=lambda p: os.path.basename(p))
     return files
 
 
@@ -76,11 +81,12 @@ def run_migrations() -> list[str]:
 
     applied_now: list[str] = []
     for path in migration_files:
-        name = path.name
+        name = os.path.basename(path)
         if name in applied:
             continue
 
-        sql = path.read_text(encoding="utf-8")
+        with open(path, "r", encoding="utf-8") as f:
+            sql = f.read()
         with get_connection() as conn:
             try:
                 conn.execute("BEGIN")
@@ -105,7 +111,7 @@ def get_migration_status() -> MigrationStatus:
     ensure_migrations_table()
     applied = _get_applied_migration_names()
     migration_files = _list_migration_files()
-    all_names = [p.name for p in migration_files]
+    all_names = [os.path.basename(p) for p in migration_files]
     pending = [name for name in all_names if name not in set(applied)]
     return MigrationStatus(applied=applied, pending=pending)
 
@@ -117,3 +123,34 @@ def init_db() -> None:
     """
 
     run_migrations()
+    _ensure_tasks_phase7_columns()
+
+
+def _ensure_tasks_phase7_columns() -> None:
+    """Ensure Phase 7 columns exist on tasks table.
+
+    Requirements:
+    - project TEXT NOT NULL
+    - type TEXT NOT NULL
+    - description TEXT
+
+    Safety:
+    - Do not drop tables
+    - Do not delete existing rows
+    - Only ALTER TABLE when a column is missing
+    """
+
+    with get_connection() as conn:
+        cur = conn.execute("PRAGMA table_info(tasks);")
+        existing = {str(r[1]) for r in cur.fetchall()}
+
+        # Note: SQLite requires a DEFAULT when adding a NOT NULL column to an existing table.
+        # These defaults are only used when backfilling existing rows.
+        if "project" not in existing:
+            conn.execute("ALTER TABLE tasks ADD COLUMN project TEXT NOT NULL DEFAULT 'General'")
+        if "type" not in existing:
+            conn.execute("ALTER TABLE tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'Task'")
+        if "description" not in existing:
+            conn.execute("ALTER TABLE tasks ADD COLUMN description TEXT")
+
+        conn.commit()

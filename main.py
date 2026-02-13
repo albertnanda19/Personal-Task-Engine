@@ -1,12 +1,7 @@
 """CLI entrypoint for personal_task_engine."""
 
-from __future__ import annotations
-
 import sys
 
-from cli.commands import run_cli
-from bot.scheduler import run_daily_scheduler
-from app.bot_listener import run_polling_bot
 from database.schema import init_db
 
 
@@ -18,22 +13,30 @@ def main(argv: list[str] | None = None) -> int:
     if argv[:1] == ["run-bot"]:
         init_db()
         try:
+            from app.bot_listener import run_polling_bot
+
             run_polling_bot()
         except KeyboardInterrupt:
             print("Bot stopped.")
         return 0
 
     if argv[:1] == ["db"]:
+        from cli.commands import run_cli
+
         return run_cli(argv)
 
     init_db()
 
     if len(argv) >= 2 and argv[0] == "bot" and argv[1] == "run":
         try:
+            from bot.scheduler import run_daily_scheduler
+
             run_daily_scheduler()
         except KeyboardInterrupt:
             print("Scheduler stopped.")
         return 0
+
+    from cli.commands import run_cli
 
     return run_cli(argv)
 

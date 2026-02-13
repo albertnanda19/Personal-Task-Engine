@@ -1,7 +1,5 @@
 """SQLite connection utilities."""
 
-from __future__ import annotations
-
 import sqlite3
 
 from config import DB_PATH

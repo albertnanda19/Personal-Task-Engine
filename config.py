@@ -3,10 +3,8 @@
 Phase 1: Only stores the SQLite database file path.
 """
 
-from __future__ import annotations
-
-from pathlib import Path
+import os
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "tasks.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "tasks.db")

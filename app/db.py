@@ -6,8 +6,6 @@ Note: The project schema has more required columns than the Discord command prov
 We fill required fields with deterministic defaults.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 
 from database.connection import get_connection
@@ -17,14 +15,21 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def insert_task(title: str, priority: str, story_points: int, due_date: str | None) -> int:
+def insert_task(
+    project: str,
+    task_type: str,
+    title: str,
+    priority: str,
+    story_points: int,
+    description: str | None,
+) -> int:
     """Insert a task and return its new id.
 
     Args:
         title: Raw title from Discord.
         priority: One of low/medium/high/urgent.
         story_points: Non-negative integer.
-        due_date: Optional YYYY-MM-DD.
+        description: Optional long description.
 
     Returns:
         New task id.
@@ -33,18 +38,18 @@ def insert_task(title: str, priority: str, story_points: int, due_date: str | No
     now = _utc_now_iso()
 
     payload = {
-        "project": "Discord",
+        "project": project,
         "module": "Inbox",
         "layer": "Bot",
         "title_raw": title,
-        "title_generated": f"([Discord] [Inbox] [Bot] {title})",
-        "type": "task",
-        "priority": priority,
+        "title_generated": f"([{project}] [{task_type}] {title})",
+        "type": task_type,
+        "priority": str(priority).lower(),
         "story_points": int(story_points),
         "epic": None,
-        "description": None,
+        "description": description,
         "start_date": None,
-        "due_date": due_date,
+        "due_date": None,
         "status": "todo",
         "impact_score": 3,
         "energy_required": 2,
@@ -99,3 +104,40 @@ def insert_task(title: str, priority: str, story_points: int, due_date: str | No
         cur = conn.execute(sql, payload)
         conn.commit()
         return int(cur.lastrowid)
+
+
+def get_task_for_bot(task_id: int) -> dict | None:
+    with get_connection() as conn:
+        cur = conn.execute("SELECT * FROM tasks WHERE id = ?", (int(task_id),))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def update_task_status_for_bot(task_id: int, status: str) -> int:
+    now = _utc_now_iso()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, int(task_id)),
+        )
+        conn.commit()
+        return int(cur.rowcount)
+
+
+def list_tasks_for_bot(status: str | None, limit: int = 20) -> list[dict]:
+    limit = int(limit)
+    if limit <= 0:
+        limit = 20
+
+    with get_connection() as conn:
+        if status is None:
+            cur = conn.execute(
+                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            )
+        return [dict(r) for r in cur.fetchall()]
