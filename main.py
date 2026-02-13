@@ -6,6 +6,7 @@ import sys
 
 from cli.commands import run_cli
 from bot.scheduler import run_daily_scheduler
+from app.bot_listener import run_polling_bot
 from database.schema import init_db
 
 
@@ -13,6 +14,14 @@ def main(argv: list[str] | None = None) -> int:
     """Initialize DB and run CLI."""
 
     argv = argv or []
+
+    if argv[:1] == ["run-bot"]:
+        init_db()
+        try:
+            run_polling_bot()
+        except KeyboardInterrupt:
+            print("Bot stopped.")
+        return 0
 
     if argv[:1] == ["db"]:
         return run_cli(argv)
