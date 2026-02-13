@@ -12,8 +12,12 @@ from database.schema import init_db
 def main(argv: list[str] | None = None) -> int:
     """Initialize DB and run CLI."""
 
-    init_db()
     argv = argv or []
+
+    if argv[:1] == ["db"]:
+        return run_cli(argv)
+
+    init_db()
 
     if len(argv) >= 2 and argv[0] == "bot" and argv[1] == "run":
         try:

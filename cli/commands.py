@@ -6,6 +6,8 @@ import argparse
 from typing import Any
 
 from bot.discord_client import send_message
+from database.connection import test_connection
+from database.schema import get_migration_status, run_migrations
 from services.scoring_service import recalculate_all_scores
 from services.summary_service import get_dashboard_summary, get_weekly_report
 from services.task_service import create_task_with_formatting, list_tasks, remove_task, set_task_status
@@ -32,7 +34,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_task_send_focus(task_subparsers)
     _add_task_send_weekly(task_subparsers)
 
+    db_parser = subparsers.add_parser("db", help="Database utilities")
+    db_subparsers = db_parser.add_subparsers(dest="command", required=True)
+    _add_db_test(db_subparsers)
+    _add_db_migrate(db_subparsers)
+    _add_db_status(db_subparsers)
+
     return parser
+
+
+def _add_db_test(db_subparsers: argparse._SubParsersAction) -> None:
+    p = db_subparsers.add_parser("test", help="Test database connection")
+    p.set_defaults(func=_cmd_db_test)
+
+
+def _add_db_migrate(db_subparsers: argparse._SubParsersAction) -> None:
+    p = db_subparsers.add_parser("migrate", help="Apply pending migrations")
+    p.set_defaults(func=_cmd_db_migrate)
+
+
+def _add_db_status(db_subparsers: argparse._SubParsersAction) -> None:
+    p = db_subparsers.add_parser("status", help="Show migration status")
+    p.set_defaults(func=_cmd_db_status)
 
 
 def _add_task_add(task_subparsers: argparse._SubParsersAction) -> None:
@@ -344,3 +367,38 @@ def _cmd_task_send_weekly(args: argparse.Namespace) -> int:
     ok = send_message(message)
     print("Sent." if ok else "Failed to send.")
     return 0 if ok else 1
+
+
+def _cmd_db_test(args: argparse.Namespace) -> int:
+    ok = test_connection()
+    print("DATABASE CONNECTION: OK" if ok else "DATABASE CONNECTION: FAILED")
+    return 0 if ok else 1
+
+
+def _cmd_db_migrate(args: argparse.Namespace) -> int:
+    applied = run_migrations()
+    for name in applied:
+        print(f"APPLIED: {name}")
+    print("MIGRATION COMPLETE")
+    return 0
+
+
+def _cmd_db_status(args: argparse.Namespace) -> int:
+    status = get_migration_status()
+
+    print("APPLIED MIGRATIONS")
+    if not status.applied:
+        print("(none)")
+    else:
+        for name in status.applied:
+            print(f"- {name}")
+
+    print("")
+    print("PENDING MIGRATIONS")
+    if not status.pending:
+        print("(none)")
+    else:
+        for name in status.pending:
+            print(f"- {name}")
+
+    return 0
