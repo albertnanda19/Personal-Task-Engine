@@ -21,6 +21,7 @@ import urllib.request
 
 from app.commands import parse_add_command
 from app.db import get_task_for_bot, insert_task, list_tasks_for_bot, update_task_status_for_bot
+from app.ui import build_box, truncate_discord
 from bot.discord_client import load_env
 
 
@@ -41,11 +42,12 @@ def _setup_logger() -> logging.Logger:
     return logger
 
 
-def _get_credentials() -> tuple[str | None, str | None]:
+def _get_credentials() -> tuple[str | None, str | None, str | None]:
     load_env()
     token = os.environ.get("DISCORD_BOT_TOKEN")
     channel_id = os.environ.get("DISCORD_CHANNEL_ID")
-    return token, channel_id
+    user_id = os.environ.get("DISCORD_USER_ID")
+    return token, channel_id, user_id
 
 
 def _data_dir() -> str:
@@ -143,53 +145,87 @@ def _sleep_seconds(seconds: int) -> None:
 def _mention_prefix(user_id: str | int | None) -> str:
     if user_id is None:
         return ""
-    return f"<@{user_id}>\n"
+    return f"<@{user_id}>\n\n"
 
 
-def _sep() -> str:
-    return "=========================="
+def _status_icon(status: str) -> str:
+    s = str(status or "").lower()
+    if s == "todo":
+        return "🟢"
+    if s == "in_progress":
+        return "🟡"
+    if s == "done":
+        return "🔵"
+    return "⚠️"
+
+
+def _status_label(status: str) -> str:
+    s = str(status or "").lower()
+    if s == "todo":
+        return "TODO"
+    if s == "in_progress":
+        return "IN PROGRESS"
+    if s == "done":
+        return "DONE"
+    return s.upper() or "-"
 
 
 def _format_help(user_id: str | int | None) -> str:
-    msg = "\n".join(
+    body = "\n".join(
         [
-            _sep(),
-            "📘 TASK BOT DOCUMENTATION",
-            _sep(),
+            "Quick Commands (copy-ready):",
             "",
-            "➕ Add Task:",
+            "➕ Create:",
+            "```txt",
             "!add",
-            "project=ProjectName",
-            "type=Bug",
-            "priority=High",
-            "title=Short Title",
-            "sp=3",
-            "desc=Optional description",
+            "```",
             "",
             "📋 List:",
+            "```txt",
             "!list all",
+            "```",
+            "```txt",
             "!list todo",
+            "```",
+            "```txt",
             "!list progress",
+            "```",
+            "```txt",
             "!list done",
+            "```",
             "",
-            "🔄 Update Status:",
-            "!progress 12",
-            "!done 12",
-            "!todo 12",
+            "🔄 Update:",
+            "```txt",
+            "!progress <id>",
+            "```",
+            "```txt",
+            "!done <id>",
+            "```",
+            "```txt",
+            "!todo <id>",
+            "```",
             "",
-            _sep(),
+            "📄 Templates:",
+            "```txt",
+            "!template add",
+            "```",
+            "```txt",
+            "!template update",
+            "```",
+            "",
+            "Status Meaning:",
+            "🟢 TODO",
+            "🟡 IN PROGRESS",
+            "🔵 DONE",
         ]
     )
-    return _mention_prefix(user_id) + msg
+    msg = build_box("📘  TASK BOT DOCUMENTATION", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
 
 
 def _format_error(user_id: str | int | None) -> str:
-    msg = "\n".join(
+    body = "\n".join(
         [
-            _sep(),
-            "❌ FORMAT ERROR",
-            _sep(),
-            "",
             "Gunakan:",
             "!add",
             "project=...",
@@ -200,80 +236,133 @@ def _format_error(user_id: str | int | None) -> str:
             "Ketik !help untuk dokumentasi.",
         ]
     )
-    return _mention_prefix(user_id) + msg
+    msg = build_box("❌  FORMAT ERROR", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
 
 
 def _format_add_success(user_id: str | int | None, task_id: int, parsed: dict) -> str:
-    msg = "\n".join(
-        [
-            _sep(),
-            "✅ SUCCESS",
-            _sep(),
-            "",
-            f"Task berhasil dibuat (ID: {task_id})",
-            f"Project: {parsed['project']}",
-            f"Type: {parsed['type']}",
-            f"Priority: {str(parsed['priority']).title()}",
-            f"Title: {parsed['title']}",
-            f"SP: {parsed['story_points']}",
-        ]
-    )
-    return _mention_prefix(user_id) + msg
+    desc = (parsed.get("description") or "").strip()
+
+    lines = [
+        f"🆔  ID        : {task_id}",
+        f"📦  Project   : {parsed['project']}",
+        f"🏷️  Type      : {parsed['type']}",
+        f"🔥  Priority  : {str(parsed['priority']).title()}",
+        f"🟢  Status    : TODO",
+        f"🧠  SP        : {parsed['story_points']}",
+    ]
+
+    if desc:
+        lines.extend(["", "📝  Description:", desc])
+
+    msg = build_box("✅  TASK CREATED", "\n".join(lines))
+    return truncate_discord(_mention_prefix(user_id) + msg)
 
 
-def _status_label(status: str) -> str:
-    s = str(status or "").lower()
-    if s == "todo":
-        return "TODO"
-    if s == "in_progress":
-        return "IN_PROGRESS"
-    if s == "done":
-        return "DONE"
-    return s.upper() or "-"
+def _format_list(user_id: str | int | None, header_status: str, tasks: list[dict]) -> str:
+    title = "📋  TASK LIST" if not header_status else f"📋  TASK LIST ({header_status})"
 
-
-def _format_list(user_id: str | int | None, status_label: str, tasks: list[dict]) -> str:
-    header = "📋 TASK LIST (" + status_label + ")"
-    lines = [_sep(), header, _sep(), ""]
     if not tasks:
-        lines.append("Tidak ada task.")
-        return _mention_prefix(user_id) + "\n".join(lines)
+        msg = build_box(title, "Tidak ada task.")
+        return truncate_discord(_mention_prefix(user_id) + msg)
 
-    for t in tasks:
-        lines.extend(
-            [
-                f"[ID: {t.get('id')}] [{str(t.get('priority') or '').title()}] [{t.get('project')}] [{t.get('type')}]",
-                f"Title: {t.get('title_raw')}",
-                f"SP: {t.get('story_points', 0)}",
-                f"Status: {_status_label(t.get('status'))}",
-                "--------------------------",
-            ]
-        )
-    return _mention_prefix(user_id) + "\n".join(lines)
+    rows: list[str] = []
+    for idx, t in enumerate(tasks):
+        tid = t.get("id")
+        pr = str(t.get("priority") or "").title()
+        proj = str(t.get("project") or "-")
+        typ = str(t.get("type") or "-")
+        status = str(t.get("status") or "")
+
+        title_raw = str(t.get("title_raw") or "").strip()
+        icon = _status_icon(status)
+        label = _status_label(status)
+
+        rows.append(f"🆔 {tid}  | 🔥 {pr} | 📦 {proj} | 🏷️ {typ}")
+        rows.append(f"   {icon} {label}")
+        rows.append(f"   {title_raw}")
+
+        if idx != len(tasks) - 1:
+            rows.append("")
+            rows.append("──────────────────────")
+            rows.append("")
+
+    rows.append("")
+    rows.append(f"Total: {len(tasks)} task(s)")
+
+    msg = build_box(title, "\n".join(rows))
+    return truncate_discord(_mention_prefix(user_id) + msg)
 
 
 def _format_status_updated(user_id: str | int | None, task_id: int, new_status: str) -> str:
-    msg = "\n".join(
+    body = "\n".join(
         [
-            _sep(),
-            "🔄 STATUS UPDATED",
-            _sep(),
-            "",
-            f"Task ID: {task_id}",
-            f"New Status: {_status_label(new_status)}",
+            f"🆔  ID        : {task_id}",
+            f"New Status    : {_status_icon(new_status)} {_status_label(new_status)}",
         ]
     )
-    return _mention_prefix(user_id) + msg
+    msg = build_box("🔄  STATUS UPDATED", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _format_template_add(user_id: str | int | None) -> str:
+    body = "\n".join(
+        [
+            "```txt",
+            "!add",
+            "project=",
+            "",
+            "# Choose ONE type option (delete the others):",
+            "type=Task",
+            "type=Story",
+            "type=Bug",
+            "type=Improvement",
+            "",
+            "# Choose ONE priority option (delete the others):",
+            "priority=Low",
+            "priority=Medium",
+            "priority=High",
+            "priority=Urgent",
+            "title=",
+            "sp=",
+            "desc=",
+            "```",
+            "",
+            "Notes:",
+            "- type bebas (Task/Story/Bug/Improvement/dll)",
+            "- priority: Low / Medium / High / Urgent",
+            "- sp optional",
+            "- desc optional",
+        ]
+    )
+    msg = build_box("➕  ADD TASK TEMPLATE", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _format_template_update(user_id: str | int | None) -> str:
+    body = "\n".join(
+        [
+            "```txt",
+            "!progress 12",
+            "!done 12",
+            "!todo 12",
+            "```",
+            "",
+            "Replace 12 with task ID.",
+        ]
+    )
+    msg = build_box("🔄  UPDATE TASK TEMPLATE", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
 
 
 def run_polling_bot() -> None:
     """Run the polling loop."""
 
     logger = _setup_logger()
-    token, channel_id = _get_credentials()
+    token, channel_id, user_id = _get_credentials()
 
-    if not token or not channel_id:
-        print("Missing DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID (env or .env).")
+    if not token or not channel_id or not user_id:
+        print("Missing DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID / DISCORD_USER_ID (env or .env).")
         return
 
     last_processed_id = _read_last_message_id()
@@ -288,7 +377,7 @@ def run_polling_bot() -> None:
                 _sleep_seconds(5)
                 continue
 
-            new_messages: list[tuple[int, str, str | None]] = []
+            new_messages: list[tuple[int, str]] = []
             for msg in data:
                 try:
                     msg_id = int(msg.get("id") or 0)
@@ -302,8 +391,6 @@ def run_polling_bot() -> None:
                 if bool(author.get("bot")):
                     continue
 
-                author_id = author.get("id")
-
                 content = str(msg.get("content") or "")
 
                 cmd = content.strip().lower()
@@ -314,57 +401,70 @@ def run_polling_bot() -> None:
                     or cmd.startswith("!progress")
                     or cmd.startswith("!done")
                     or cmd.startswith("!todo")
+                    or cmd.startswith("!template")
                 ):
                     continue
 
-                new_messages.append((msg_id, content, str(author_id) if author_id is not None else None))
+                new_messages.append((msg_id, content))
 
             new_messages.sort(key=lambda x: x[0])
 
-            for msg_id, content, author_id in new_messages:
+            for msg_id, content in new_messages:
                 try:
                     raw = str(content or "").strip()
                     cmd_line = raw.splitlines()[0].strip().lower() if raw else ""
 
                     if cmd_line == "!help":
-                        _reply(channel_id, token, _format_help(author_id), logger)
+                        _reply(channel_id, token, _format_help(user_id), logger)
+                    elif cmd_line.startswith("!template"):
+                        parts = cmd_line.split()
+                        if len(parts) != 2:
+                            _reply(channel_id, token, _format_error(user_id), logger)
+                        else:
+                            arg = parts[1].strip().lower()
+                            if arg == "add":
+                                _reply(channel_id, token, _format_template_add(user_id), logger)
+                            elif arg == "update":
+                                _reply(channel_id, token, _format_template_update(user_id), logger)
+                            else:
+                                _reply(channel_id, token, _format_error(user_id), logger)
                     elif cmd_line.startswith("!list"):
                         parts = cmd_line.split()
                         if len(parts) != 2:
-                            _reply(channel_id, token, _format_error(author_id), logger)
+                            _reply(channel_id, token, _format_error(user_id), logger)
                         else:
                             arg = parts[1].strip().lower()
                             if arg == "all":
                                 tasks = list_tasks_for_bot(status=None, limit=20)
-                                _reply(channel_id, token, _format_list(author_id, "ALL", tasks), logger)
+                                _reply(channel_id, token, _format_list(user_id, "ALL", tasks), logger)
                             elif arg == "todo":
                                 tasks = list_tasks_for_bot(status="todo", limit=20)
-                                _reply(channel_id, token, _format_list(author_id, "TODO", tasks), logger)
+                                _reply(channel_id, token, _format_list(user_id, "TODO", tasks), logger)
                             elif arg == "progress":
                                 tasks = list_tasks_for_bot(status="in_progress", limit=20)
                                 _reply(
-                                    channel_id, token, _format_list(author_id, "IN_PROGRESS", tasks), logger
+                                    channel_id, token, _format_list(user_id, "IN PROGRESS", tasks), logger
                                 )
                             elif arg == "done":
                                 tasks = list_tasks_for_bot(status="done", limit=20)
-                                _reply(channel_id, token, _format_list(author_id, "DONE", tasks), logger)
+                                _reply(channel_id, token, _format_list(user_id, "DONE", tasks), logger)
                             else:
-                                _reply(channel_id, token, _format_error(author_id), logger)
+                                _reply(channel_id, token, _format_error(user_id), logger)
                     elif cmd_line.startswith("!progress") or cmd_line.startswith("!done") or cmd_line.startswith("!todo"):
                         parts = cmd_line.split()
                         if len(parts) != 2:
-                            _reply(channel_id, token, _format_error(author_id), logger)
+                            _reply(channel_id, token, _format_error(user_id), logger)
                         else:
                             action = parts[0]
                             task_id_raw = parts[1]
                             try:
                                 task_id = int(task_id_raw)
                             except Exception:
-                                _reply(channel_id, token, _format_error(author_id), logger)
+                                _reply(channel_id, token, _format_error(user_id), logger)
                             else:
                                 existing = get_task_for_bot(task_id)
                                 if existing is None:
-                                    _reply(channel_id, token, _format_error(author_id), logger)
+                                    _reply(channel_id, token, _format_error(user_id), logger)
                                 else:
                                     new_status = "todo"
                                     if action == "!progress":
@@ -376,18 +476,18 @@ def run_polling_bot() -> None:
 
                                     updated = update_task_status_for_bot(task_id=task_id, status=new_status)
                                     if updated <= 0:
-                                        _reply(channel_id, token, _format_error(author_id), logger)
+                                        _reply(channel_id, token, _format_error(user_id), logger)
                                     else:
                                         _reply(
                                             channel_id,
                                             token,
-                                            _format_status_updated(author_id, task_id, new_status),
+                                            _format_status_updated(user_id, task_id, new_status),
                                             logger,
                                         )
                     elif cmd_line == "!add":
                         parsed = parse_add_command(raw)
                         if parsed is None:
-                            _reply(channel_id, token, _format_error(author_id), logger)
+                            _reply(channel_id, token, _format_error(user_id), logger)
                         else:
                             task_id = insert_task(
                                 project=parsed["project"],
@@ -400,28 +500,15 @@ def run_polling_bot() -> None:
                             _reply(
                                 channel_id,
                                 token,
-                                _format_add_success(author_id, task_id, parsed),
+                                _format_add_success(user_id, task_id, parsed),
                                 logger,
                             )
                     else:
-                        _reply(channel_id, token, _format_error(author_id), logger)
+                        _reply(channel_id, token, _format_error(user_id), logger)
                 except Exception as e:
                     logger.exception("Failed processing command: %s", e)
-                    _reply(
-                        channel_id,
-                        token,
-                        _mention_prefix(author_id)
-                        + "\n".join(
-                            [
-                                _sep(),
-                                "❌ ERROR",
-                                _sep(),
-                                "",
-                                "Gagal memproses perintah. Coba lagi nanti.",
-                            ]
-                        ),
-                        logger,
-                    )
+                    body = "Gagal memproses perintah. Coba lagi nanti."
+                    _reply(channel_id, token, truncate_discord(_mention_prefix(user_id) + build_box("❌  ERROR", body)), logger)
 
                 last_processed_id = msg_id
                 _write_last_message_id(last_processed_id)
