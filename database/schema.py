@@ -34,6 +34,16 @@ def ensure_migrations_table() -> None:
         conn.commit()
 
 
+def _ensure_tasks_search_indexes() -> None:
+    """Ensure indexes exist to keep list/search queries fast."""
+
+    with get_connection() as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_title_raw ON tasks(title_raw)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
+        conn.commit()
+
+
 def _migrations_dir() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(here, "migrations")
@@ -124,6 +134,7 @@ def init_db() -> None:
 
     run_migrations()
     _ensure_tasks_phase7_columns()
+    _ensure_tasks_search_indexes()
 
 
 def _ensure_tasks_phase7_columns() -> None:

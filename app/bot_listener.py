@@ -25,7 +25,7 @@ from app.db import (
     get_task_for_bot,
     insert_task,
     list_tasks_for_bot,
-    list_tasks_paginated_for_bot,
+    search_tasks_for_bot,
     update_task_status_for_bot,
 )
 from app.list_renderer import (
@@ -263,16 +263,19 @@ def _format_help(user_id: str | int | None) -> str:
             "",
             "📋 List:",
             "```txt",
-            "!list all",
+            "!list all [keyword]",
             "```",
             "```txt",
-            "!list todo",
+            "!list active [keyword]",
             "```",
             "```txt",
-            "!list progress",
+            "!list todo [keyword]",
             "```",
             "```txt",
-            "!list done",
+            "!list progress [keyword]",
+            "```",
+            "```txt",
+            "!list done [keyword]",
             "```",
             "",
             "� Detail:",
@@ -690,6 +693,86 @@ def buildTaskDetailPayload(user_id: str, task: dict) -> dict:
     return _build_message_payload(user_id=user_id, content=f"<@{user_id}>" if user_id else None, embeds=[embed])
 
 
+def parseListCommand(raw_line: str) -> tuple[str | None, str | None, str | None]:
+    parts = str(raw_line or "").strip().split()
+    if len(parts) < 2:
+        return None, None, "Scope tidak dikenali. Gunakan: all | active | todo | progress | done"
+
+    scope = str(parts[1] or "").strip().lower()
+    keyword = None
+    if len(parts) >= 3:
+        keyword = str(parts[2] or "").strip()
+        if not keyword:
+            keyword = None
+
+    valid = {"all", "active", "todo", "progress", "done"}
+    if scope not in valid:
+        return None, None, "Scope tidak dikenali. Gunakan: all | active | todo | progress | done"
+
+    return scope, keyword, None
+
+
+def buildListQuery(scope: str, keyword: str | None) -> tuple[str, str | None, int]:
+    # Query building is encapsulated in DB layer; we keep this wrapper for structure clarity.
+    return str(scope), (str(keyword) if keyword is not None else None), 20
+
+
+def executeTaskQuery(scope: str, keyword: str | None, limit: int) -> tuple[list[dict], int]:
+    return search_tasks_for_bot(scope=scope, keyword=keyword, limit=int(limit), offset=0)
+
+
+def renderTaskListEmbed(
+    *,
+    user_id: str,
+    scope_title: str,
+    scope_norm: str,
+    keyword: str | None,
+    tasks: list[dict],
+    total_matches: int,
+    limit: int,
+) -> list[dict]:
+    kw = str(keyword or "").strip()
+
+    if total_matches <= 0:
+        desc = f"Tidak ada task yang cocok dengan pencarian \"{kw}\"" if kw else "Tidak ada task untuk scope tersebut."
+        embed = buildEmbed(
+            title="🔍 No Task Found",
+            description=desc,
+            color=NEUTRAL_LIST_COLOR,
+            fields=[],
+            footer=None,
+            timestamp=None,
+        )
+        return [_build_message_payload(user_id=user_id, content=f"<@{user_id}>" if user_id else None, embeds=[embed])]
+
+    shown_count = min(int(limit), int(total_matches))
+
+    chunks: list[list[dict]] = []
+    chunk_size = 10
+    for i in range(0, len(tasks), chunk_size):
+        chunks.append(tasks[i : i + chunk_size])
+    if not chunks:
+        chunks = [[]]
+
+    payloads: list[dict] = []
+    for idx, ch in enumerate(chunks):
+        payloads.append(
+            _build_list_embeds(
+                user_id=user_id,
+                title=scope_title,
+                kind_norm=scope_norm,
+                keyword=kw,
+                tasks=ch,
+                total_matches=total_matches,
+                shown_count=shown_count,
+                chunk_index=idx,
+                chunk_count=len(chunks),
+            )
+        )
+
+    return payloads
+
+
 def detailCommandHandler(requester_user_id: str, raw_line: str) -> str:
     parts = str(raw_line or "").strip().split()
     task_id, err = validateDetailInput(parts)
@@ -711,13 +794,14 @@ def _build_list_embeds(
     user_id: str,
     title: str,
     kind_norm: str,
+    keyword: str | None,
     tasks: list[dict],
-    meta: dict,
+    total_matches: int,
+    shown_count: int,
     chunk_index: int,
     chunk_count: int,
 ) -> dict:
-    total = int(meta.get("total_kind") or 0)
-    page = int(meta.get("page") or 1)
+    total = int(total_matches)
 
     fields: list[dict] = []
     for t in tasks:
@@ -732,17 +816,16 @@ def _build_list_embeds(
         value = "\n".join([f"📦 {proj}", ttitle])
         fields.append({"name": name, "value": value, "inline": False})
 
-    footer = f"Total: {total} task(s)"
+    footer = f"Showing {shown_count} of {total} results" if total > shown_count else f"Total: {total} task(s)"
     if chunk_count > 1:
         footer = footer + f" • Part {chunk_index + 1}/{chunk_count}"
-    if total > len(tasks):
-        footer = footer + f" • Page {page}"
-    if total > int(meta.get("page_size") or 0) and chunk_index == chunk_count - 1:
-        footer = footer + f" • Next: !list {kind_norm} {page + 1}"
+
+    kw = str(keyword or "").strip()
+    title_suffix = f" — Search: \"{kw}\"" if kw else ""
 
     embed = buildEmbed(
-        title=f"📋 Task List ({title})",
-        description=f"Total: {total} tasks",
+        title=f"📋 Task List ({title}){title_suffix}",
+        description=f"Total: {total} tasks found",
         color=NEUTRAL_LIST_COLOR,
         fields=fields,
         footer=footer,
@@ -841,75 +924,41 @@ def run_polling_bot() -> None:
                             else:
                                 _reply(channel_id, token, _format_error(user_id), logger)
                     elif cmd_line.startswith("!list"):
-                        parts = cmd_line.split()
-                        if len(parts) not in (2, 3):
-                            _reply(channel_id, token, _format_error(user_id), logger)
+                        scope, keyword, err = parseListCommand(cmd_line)
+                        if err or not scope:
+                            embed = buildEmbed(
+                                title="⚠️ Invalid Scope",
+                                description=str(err or "Scope tidak dikenali. Gunakan: all | active | todo | progress | done"),
+                                color=15158332,
+                                fields=[],
+                                footer=None,
+                                timestamp=None,
+                            )
+                            _reply(
+                                channel_id,
+                                token,
+                                _build_message_payload(
+                                    user_id=author_id,
+                                    content=f"<@{author_id}>",
+                                    embeds=[embed],
+                                ),
+                                logger,
+                            )
                         else:
-                            kind = parts[1].strip().lower()
-                            page = 1
-                            if len(parts) == 3:
-                                try:
-                                    page = int(parts[2])
-                                except Exception:
-                                    page = 1
+                            scope_q, keyword_q, limit = buildListQuery(scope, keyword)
+                            rows, total = executeTaskQuery(scope_q, keyword_q, limit)
 
-                            # Normalize kinds/aliases
-                            if kind == "progress":
-                                kind_norm = "progress"
-                                title = "PROGRESS"
-                            elif kind == "in_progress":
-                                kind_norm = "progress"
-                                title = "PROGRESS"
-                            elif kind == "all":
-                                kind_norm = "all"
-                                title = "ALL"
-                            elif kind == "active":
-                                kind_norm = "active"
-                                title = "ACTIVE"
-                            elif kind == "done":
-                                kind_norm = "done"
-                                title = "DONE"
-                            elif kind == "today":
-                                kind_norm = "today"
-                                title = "TODAY"
-                            elif kind == "todo":
-                                kind_norm = "todo"
-                                title = "TODO"
-                            else:
-                                _reply(channel_id, token, _format_error(user_id), logger)
-                                kind_norm = ""
-                                title = ""
-
-                            if kind_norm:
-                                tasks, meta = list_tasks_paginated_for_bot(
-                                    kind=kind_norm,
-                                    page=page,
-                                    page_size=15,
-                                )
-
-                                # Embed list: max 10 tasks per embed payload
-                                chunks: list[list[dict]] = []
-                                chunk_size = 10
-                                for i in range(0, len(tasks), chunk_size):
-                                    chunks.append(tasks[i : i + chunk_size])
-                                if not chunks:
-                                    chunks = [[]]
-
-                                payloads: list[dict] = []
-                                for idx, ch in enumerate(chunks):
-                                    payloads.append(
-                                        _build_list_embeds(
-                                            user_id=author_id,
-                                            title=title,
-                                            kind_norm=kind_norm,
-                                            tasks=ch,
-                                            meta=meta,
-                                            chunk_index=idx,
-                                            chunk_count=len(chunks),
-                                        )
-                                    )
-
-                                _reply_many(channel_id, token, payloads, logger)
+                            scope_title = scope_q.upper() if scope_q != "progress" else "PROGRESS"
+                            payloads = renderTaskListEmbed(
+                                user_id=author_id,
+                                scope_title=scope_title,
+                                scope_norm=scope_q,
+                                keyword=keyword_q,
+                                tasks=rows,
+                                total_matches=total,
+                                limit=limit,
+                            )
+                            _reply_many(channel_id, token, payloads, logger)
                     elif cmd_line.startswith("!detail"):
                         msg = detailCommandHandler(author_id, cmd_line)
                         _reply(channel_id, token, msg, logger)

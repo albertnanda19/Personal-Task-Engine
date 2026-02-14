@@ -238,3 +238,89 @@ def delete_task_for_bot(task_id: int) -> bool:
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         conn.commit()
         return int(cur.rowcount or 0) > 0
+
+
+def search_tasks_for_bot(
+    *,
+    scope: str,
+    keyword: str | None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Search tasks by scope and optional keyword.
+
+    - scope: all|active|todo|progress|done
+    - keyword: single word, case-insensitive, searched via LIKE across key columns
+
+    Returns: (rows, total_matches)
+    """
+
+    scope = str(scope or "").lower().strip()
+    kw = str(keyword or "").strip().lower()
+    if not kw:
+        kw = ""
+
+    conditions: list[str] = []
+    params: list = []
+
+    if scope == "active":
+        conditions.append("status IN (?, ?)")
+        params.extend(["todo", "in_progress"])
+    elif scope == "todo":
+        conditions.append("status = ?")
+        params.append("todo")
+    elif scope == "progress":
+        conditions.append("status = ?")
+        params.append("in_progress")
+    elif scope == "done":
+        conditions.append("status = ?")
+        params.append("done")
+    elif scope == "all":
+        pass
+    else:
+        # Unknown scope treated as all; validation is done in command layer.
+        pass
+
+    if kw:
+        like = f"%{kw}%"
+        conditions.append(
+            "("
+            "LOWER(COALESCE(title_raw,'')) LIKE ? "
+            "OR LOWER(COALESCE(project,'')) LIKE ? "
+            "OR LOWER(COALESCE(description,'')) LIKE ? "
+            "OR LOWER(COALESCE(type,'')) LIKE ? "
+            "OR LOWER(COALESCE(priority,'')) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like, like])
+
+    where = ""
+    if conditions:
+        where = " WHERE " + " AND ".join(conditions)
+
+    order_by = (
+        " ORDER BY CASE status "
+        "WHEN 'in_progress' THEN 1 "
+        "WHEN 'todo' THEN 2 "
+        "WHEN 'done' THEN 3 "
+        "ELSE 99 END, created_at DESC"
+    )
+
+    limit = int(limit)
+    offset = int(offset)
+    if limit <= 0:
+        limit = 20
+    if offset < 0:
+        offset = 0
+
+    with get_connection() as conn:
+        cur_c = conn.execute(f"SELECT COUNT(1) FROM tasks{where}", tuple(params))
+        total = int(cur_c.fetchone()[0])
+
+        cur = conn.execute(
+            f"SELECT * FROM tasks{where}{order_by} LIMIT ? OFFSET ?",
+            tuple(params + [limit, offset]),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    return rows, total
