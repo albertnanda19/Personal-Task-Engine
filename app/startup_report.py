@@ -2,7 +2,8 @@ import os
 from datetime import datetime, timedelta
 
 from database.connection import get_connection
-from app.ui import build_box, truncate_discord
+from app.list_renderer import format_priority, format_status, pad_id, truncate
+from app.ui import buildEmbed, build_box, truncate_discord
 
 
 def _mention_prefix(user_id: str | int | None) -> str:
@@ -260,3 +261,95 @@ def build_startup_report_message() -> str:
 
     user_id = os.environ.get("DISCORD_USER_ID")
     return truncate_discord(_mention_prefix(user_id) + generate_startup_report())
+
+
+def _task_line_compact(task: dict) -> str:
+    tid = pad_id(task.get("id"))
+    pr_emoji, pr_label = format_priority(task.get("priority"))
+    st_emoji, st_label = format_status(task.get("status"))
+    proj = truncate(str(task.get("project") or "-"), 14)
+    title = truncate(str(task.get("title_raw") or "-"), 40)
+    st_label = st_label.replace("_", " ")
+    return f"#{tid} • {pr_emoji} {pr_label} • {st_emoji} {st_label} • 📦 {proj}\n{title}"
+
+
+def build_startup_report_payloads(user_id: str | None) -> list[dict]:
+    """Embed-style startup report.
+
+    Returns a list of Discord API payloads (each payload can contain 1+ embeds).
+    """
+
+    try:
+        active = _fetch_active_tasks()
+        done_yesterday = _fetch_done_yesterday()
+    except Exception:
+        embed = buildEmbed(
+            title="🚀 Startup Catch-up",
+            description="⚠️ Tidak bisa mengambil data task.",
+            color=15158332,
+            fields=[],
+            footer=None,
+            timestamp=None,
+        )
+        return [
+            {
+                "content": f"<@{user_id}>" if user_id else "",
+                "embeds": [embed],
+                "allowed_mentions": {"parse": [], "users": [str(user_id)]} if user_id else {"parse": []},
+            }
+        ]
+
+    active_head = active[:5]
+    active_remaining = max(len(active) - len(active_head), 0)
+    done_head = done_yesterday[:5]
+    done_remaining = max(len(done_yesterday) - len(done_head), 0)
+
+    active_value = "\n\n".join([_task_line_compact(t) for t in active_head]) if active_head else "-"
+    if active_remaining > 0:
+        active_value += f"\n\n... and {active_remaining} more"
+
+    done_value = "\n\n".join([_task_line_compact(t) for t in done_head]) if done_head else "-"
+    if done_remaining > 0:
+        done_value += f"\n\n... and {done_remaining} more"
+
+    fields = [
+        {"name": "Active Tasks", "value": active_value, "inline": False},
+        {"name": "Done Yesterday", "value": done_value, "inline": False},
+    ]
+
+    embed1 = buildEmbed(
+        title="🚀 Startup Catch-up",
+        description=None,
+        color=3447003,
+        fields=fields,
+        footer=f"Active: {len(active)} • Done Yesterday: {len(done_yesterday)}",
+        timestamp=None,
+    )
+
+    embeds = [embed1]
+
+    # Optional second embed if active is large
+    if len(active) > 5:
+        extra = active[5:15]
+        extra_value = "\n\n".join([_task_line_compact(t) for t in extra]) if extra else "-"
+        if len(active) > 15:
+            extra_value += f"\n\n... and {len(active) - 15} more"
+
+        embed2 = buildEmbed(
+            title="🚀 Startup Catch-up (More Active)",
+            description=None,
+            color=3447003,
+            fields=[{"name": "Active Tasks (cont.)", "value": extra_value, "inline": False}],
+            footer=None,
+            timestamp=None,
+        )
+        embeds.append(embed2)
+
+    allowed_mentions = {"parse": []}
+    content = ""
+    if user_id:
+        content = f"<@{user_id}>"
+        allowed_mentions = {"parse": [], "users": [str(user_id)]}
+
+    # One message containing up to 2 embeds.
+    return [{"content": content, "embeds": embeds, "allowed_mentions": allowed_mentions}]

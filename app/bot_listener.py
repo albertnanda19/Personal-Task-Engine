@@ -36,12 +36,42 @@ from app.list_renderer import (
     render_task_list,
     truncate,
 )
-from app.startup_report import build_startup_report_message
-from app.ui import build_box, truncate_discord
+from app.startup_report import build_startup_report_payloads
+from app.ui import buildEmbed, build_box, truncate_discord
 from bot.discord_client import load_env
 
 
 pending_delete: dict[int, str] = {}
+
+
+PRIORITY_COLOR = {
+    "low": 3066993,
+    "medium": 15844367,
+    "high": 15105570,
+    "urgent": 15158332,
+}
+
+NEUTRAL_LIST_COLOR = 3447003
+
+
+def _format_dt(value: str) -> str:
+    s = str(value or "").strip()
+    if not s or s == "-":
+        return "-"
+    if "T" in s:
+        s = s.replace("T", " ")
+    if "+" in s:
+        s = s.split("+", 1)[0]
+    if "Z" in s:
+        s = s.replace("Z", "")
+    # keep YYYY-MM-DD HH:MM
+    if len(s) >= 16:
+        return s[:16]
+    return s
+
+
+def _priority_color(priority: str) -> int:
+    return int(PRIORITY_COLOR.get(str(priority or "").lower().strip(), NEUTRAL_LIST_COLOR))
 
 
 def _setup_logger() -> logging.Logger:
@@ -141,9 +171,41 @@ def _http_post_json(url: str, token: str, payload: dict, logger: logging.Logger)
         return False
 
 
-def _reply(channel_id: str, token: str, content: str, logger: logging.Logger) -> None:
+def _build_allowed_mentions(user_id: str | None) -> dict:
+    # Keep bot safe from unwanted mass mentions.
+    # Allow mentioning only the intended user when provided.
+    if not user_id:
+        return {"parse": []}
+    return {"parse": [], "users": [str(user_id)]}
+
+
+def _build_message_payload(*, user_id: str | None, content: str | None, embeds: list[dict] | None) -> dict:
+    payload: dict = {"allowed_mentions": _build_allowed_mentions(user_id)}
+    if content is not None:
+        payload["content"] = truncate_discord(str(content), 2000)
+    if embeds:
+        payload["embeds"] = embeds[:10]
+    return payload
+
+
+def _reply_payload(channel_id: str, token: str, payload: dict, logger: logging.Logger) -> None:
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-    _http_post_json(url, token, {"content": content}, logger)
+    _http_post_json(url, token, payload, logger)
+
+
+def _reply(channel_id: str, token: str, content_or_payload, logger: logging.Logger) -> None:
+    # Backward compatible: accept plain content string or full payload dict.
+    if isinstance(content_or_payload, dict):
+        _reply_payload(channel_id, token, content_or_payload, logger)
+        return
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    _http_post_json(url, token, {"content": str(content_or_payload or "")}, logger)
+
+
+def _reply_many(channel_id: str, token: str, payloads: list[dict], logger: logging.Logger) -> None:
+    for p in payloads:
+        _reply_payload(channel_id, token, p, logger)
 
 
 def _utc_now() -> datetime:
@@ -575,6 +637,59 @@ def renderTaskDetail(user_id: str, task: dict) -> str:
     return truncate_discord(_mention_prefix(user_id) + msg)
 
 
+def buildTaskDetailPayload(user_id: str, task: dict) -> dict:
+    tid = pad_id(task.get("id"))
+    project = str(task.get("project") or "-").strip() or "-"
+    task_type = str(task.get("type") or "-").strip() or "-"
+    title = str(task.get("title_raw") or "-").strip() or "-"
+
+    pr_emoji, pr_label = format_priority(task.get("priority"))
+    st_emoji, st_label = format_status(task.get("status"))
+    st_label = st_label.replace("_", " ")
+
+    desc_raw = str(task.get("description") or "").strip()
+    if not desc_raw:
+        desc_val = "-"
+    else:
+        desc_val = desc_raw
+        if len(desc_val) > 1000:
+            desc_val = truncate(desc_val, 997) + "... (truncated)"
+
+    created_at_raw = str(task.get("created_at") or "-").strip() or "-"
+    updated_at_raw = str(task.get("updated_at") or "-").strip() or "-"
+
+    created = _format_dt(created_at_raw)
+    updated = _format_dt(updated_at_raw)
+    completed = "-"
+    if str(task.get("status") or "").lower() == "done":
+        completed = updated if updated != "-" else "-"
+
+    summary = f"Project: {project} • Type: {task_type}"
+    fields = [
+        {"name": "Status", "value": f"{st_emoji} {st_label}", "inline": True},
+        {"name": "Priority", "value": f"{pr_emoji} {pr_label}", "inline": True},
+        {"name": "Description", "value": desc_val, "inline": False},
+        {"name": "Created", "value": created, "inline": True},
+        {"name": "Updated", "value": updated, "inline": True},
+        {"name": "Completed", "value": completed, "inline": True},
+    ]
+
+    title_trim = title
+    if len(title_trim) > 100:
+        title_trim = truncate(title_trim, 100)
+
+    embed = buildEmbed(
+        title=f"📌 Task #{tid} — {title_trim}",
+        description=summary,
+        color=_priority_color(task.get("priority")),
+        fields=fields,
+        footer=f"Task ID: {tid}",
+        timestamp=created_at_raw if created_at_raw != "-" else None,
+    )
+
+    return _build_message_payload(user_id=user_id, content=f"<@{user_id}>" if user_id else None, embeds=[embed])
+
+
 def detailCommandHandler(requester_user_id: str, raw_line: str) -> str:
     parts = str(raw_line or "").strip().split()
     task_id, err = validateDetailInput(parts)
@@ -587,7 +702,54 @@ def detailCommandHandler(requester_user_id: str, raw_line: str) -> str:
         msg = build_box("⚠️  TASK NOT FOUND", f"Task dengan ID {task_id} tidak ditemukan.")
         return truncate_discord(_mention_prefix(requester_user_id) + msg)
 
-    return renderTaskDetail(requester_user_id, task)
+    # Embed-style detail
+    return buildTaskDetailPayload(requester_user_id, task)
+
+
+def _build_list_embeds(
+    *,
+    user_id: str,
+    title: str,
+    kind_norm: str,
+    tasks: list[dict],
+    meta: dict,
+    chunk_index: int,
+    chunk_count: int,
+) -> dict:
+    total = int(meta.get("total_kind") or 0)
+    page = int(meta.get("page") or 1)
+
+    fields: list[dict] = []
+    for t in tasks:
+        tid = pad_id(t.get("id"))
+        pr_emoji, pr_label = format_priority(t.get("priority"))
+        st_emoji, st_label = format_status(t.get("status"))
+        st_label = st_label.replace("_", " ")
+        name = f"#{tid} • {pr_emoji} {pr_label} • {st_emoji} {st_label}"
+
+        proj = truncate(str(t.get("project") or "-"), 30)
+        ttitle = truncate(str(t.get("title_raw") or "-"), 80)
+        value = "\n".join([f"📦 {proj}", ttitle])
+        fields.append({"name": name, "value": value, "inline": False})
+
+    footer = f"Total: {total} task(s)"
+    if chunk_count > 1:
+        footer = footer + f" • Part {chunk_index + 1}/{chunk_count}"
+    if total > len(tasks):
+        footer = footer + f" • Page {page}"
+    if total > int(meta.get("page_size") or 0) and chunk_index == chunk_count - 1:
+        footer = footer + f" • Next: !list {kind_norm} {page + 1}"
+
+    embed = buildEmbed(
+        title=f"📋 Task List ({title})",
+        description=f"Total: {total} tasks",
+        color=NEUTRAL_LIST_COLOR,
+        fields=fields,
+        footer=footer,
+        timestamp=None,
+    )
+
+    return _build_message_payload(user_id=user_id, content=f"<@{user_id}>" if user_id else None, embeds=[embed])
 
 
 def run_polling_bot() -> None:
@@ -602,8 +764,8 @@ def run_polling_bot() -> None:
 
     # Startup report (send once per process start)
     try:
-        report = build_startup_report_message()
-        _reply(channel_id, token, report, logger)
+        payloads = build_startup_report_payloads(user_id)
+        _reply_many(channel_id, token, payloads, logger)
     except Exception as e:
         logger.exception("Failed sending startup report: %s", e)
 
@@ -725,40 +887,29 @@ def run_polling_bot() -> None:
                                     page_size=15,
                                 )
 
-                                group = bool(kind_norm == "all" and int(meta.get("total_kind") or 0) > 5)
+                                # Embed list: max 10 tasks per embed payload
+                                chunks: list[list[dict]] = []
+                                chunk_size = 10
+                                for i in range(0, len(tasks), chunk_size):
+                                    chunks.append(tasks[i : i + chunk_size])
+                                if not chunks:
+                                    chunks = [[]]
 
-                                total_label = None
-                                if title == "ACTIVE":
-                                    total_label = "Total Active"
-                                elif title == "DONE":
-                                    total_label = "Total Completed"
-                                elif title == "TODAY":
-                                    total_label = "Total Today"
-                                elif title == "TODO":
-                                    total_label = "Total Todo"
-                                elif title == "PROGRESS":
-                                    total_label = "Total In Progress"
+                                payloads: list[dict] = []
+                                for idx, ch in enumerate(chunks):
+                                    payloads.append(
+                                        _build_list_embeds(
+                                            user_id=author_id,
+                                            title=title,
+                                            kind_norm=kind_norm,
+                                            tasks=ch,
+                                            meta=meta,
+                                            chunk_index=idx,
+                                            chunk_count=len(chunks),
+                                        )
+                                    )
 
-                                rendered = render_task_list(
-                                    tasks=tasks,
-                                    title=title,
-                                    group_by_status=group,
-                                    page=int(meta.get("page") or 1),
-                                    page_size=int(meta.get("page_size") or 15),
-                                    total_active=int(meta.get("total_active") or 0)
-                                    if title in ("ALL", "ACTIVE")
-                                    else None,
-                                    total_completed=int(meta.get("total_completed") or 0)
-                                    if title in ("ALL", "DONE")
-                                    else None,
-                                    total_all=int(meta.get("total_all") or 0) if title == "ALL" else None,
-                                    total_label=total_label,
-                                    total_value=int(meta.get("total_kind") or 0),
-                                    kind_for_hint=kind_norm,
-                                )
-
-                                msg = truncate_discord(_mention_prefix(author_id) + rendered)
-                                _reply(channel_id, token, msg, logger)
+                                _reply_many(channel_id, token, payloads, logger)
                     elif cmd_line.startswith("!detail"):
                         msg = detailCommandHandler(author_id, cmd_line)
                         _reply(channel_id, token, msg, logger)
