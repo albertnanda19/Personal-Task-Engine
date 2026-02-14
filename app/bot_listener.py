@@ -28,7 +28,14 @@ from app.db import (
     list_tasks_paginated_for_bot,
     update_task_status_for_bot,
 )
-from app.list_renderer import render_task_card, render_task_list
+from app.list_renderer import (
+    format_priority,
+    format_status,
+    pad_id,
+    render_task_card,
+    render_task_list,
+    truncate,
+)
 from app.startup_report import build_startup_report_message
 from app.ui import build_box, truncate_discord
 from bot.discord_client import load_env
@@ -206,7 +213,12 @@ def _format_help(user_id: str | int | None) -> str:
             "!list done",
             "```",
             "",
-            "🔄 Update:",
+            "� Detail:",
+            "```txt",
+            "!detail <id>",
+            "```",
+            "",
+            "�🔄 Update:",
             "```txt",
             "!progress <id>",
             "```",
@@ -490,6 +502,94 @@ def _format_template_update(user_id: str | int | None) -> str:
     return truncate_discord(_mention_prefix(user_id) + msg)
 
 
+def validateDetailInput(parts: list[str]) -> tuple[int | None, str | None]:
+    if len(parts) < 2:
+        return None, "Gunakan: !detail <task_id>"
+
+    raw_id = str(parts[1] or "").strip()
+    try:
+        task_id = int(raw_id)
+    except Exception:
+        return None, "Task ID harus angka. Contoh: !detail 3"
+
+    if task_id <= 0:
+        return None, "Task ID harus angka > 0."
+
+    return task_id, None
+
+
+def fetchTaskById(task_id: int) -> dict | None:
+    return get_task_for_bot(int(task_id))
+
+
+def renderTaskDetail(user_id: str, task: dict) -> str:
+    tid = pad_id(task.get("id"))
+    project = str(task.get("project") or "-").strip() or "-"
+    task_type = str(task.get("type") or "-").strip() or "-"
+    title = str(task.get("title_raw") or "-").strip() or "-"
+    created_at = str(task.get("created_at") or "-").strip() or "-"
+    updated_at = str(task.get("updated_at") or "-").strip() or "-"
+
+    pr_emoji, pr_label = format_priority(task.get("priority"))
+    st_emoji, st_label = format_status(task.get("status"))
+
+    status_line = f"{st_emoji} {st_label}"
+
+    desc_raw = str(task.get("description") or "").strip()
+    if not desc_raw:
+        desc_block = "-"
+    else:
+        # keep it readable + safe for Discord length
+        if len(desc_raw) > 1000:
+            desc_block = truncate(desc_raw, 950) + "... (truncated)"
+        else:
+            desc_block = desc_raw
+
+    completed_at = "-"
+    if str(task.get("status") or "").lower() == "done":
+        # No dedicated completed_at column; best-effort use updated_at.
+        completed_at = updated_at if updated_at != "-" else "-"
+
+    body_lines = [
+        f"🆔 {tid}",
+        f"📦 Project      : {project}",
+        f"🏷️ Type         : {task_type}",
+        f"{pr_emoji} Priority     : {pr_label}",
+        f"📊 Status       : {status_line}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📝 TITLE",
+        title,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📖 DESCRIPTION",
+        desc_block,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 Created      : {created_at}",
+        f"🛠️ Updated      : {updated_at}",
+        f"✅ Completed    : {completed_at}",
+    ]
+
+    msg = build_box("📌  TASK DETAIL", "\n".join(body_lines))
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def detailCommandHandler(requester_user_id: str, raw_line: str) -> str:
+    parts = str(raw_line or "").strip().split()
+    task_id, err = validateDetailInput(parts)
+    if err:
+        msg = build_box("⚠️  TASK NOT FOUND", err)
+        return truncate_discord(_mention_prefix(requester_user_id) + msg)
+
+    task = fetchTaskById(int(task_id))
+    if task is None:
+        msg = build_box("⚠️  TASK NOT FOUND", f"Task dengan ID {task_id} tidak ditemukan.")
+        return truncate_discord(_mention_prefix(requester_user_id) + msg)
+
+    return renderTaskDetail(requester_user_id, task)
+
+
 def run_polling_bot() -> None:
     """Run the polling loop."""
 
@@ -544,6 +644,7 @@ def run_polling_bot() -> None:
                     cmd.startswith("!add")
                     or cmd.startswith("!help")
                     or cmd.startswith("!list")
+                    or cmd.startswith("!detail")
                     or cmd.startswith("!delete")
                     or cmd.startswith("!confirm")
                     or cmd.startswith("!cancel")
@@ -658,6 +759,9 @@ def run_polling_bot() -> None:
 
                                 msg = truncate_discord(_mention_prefix(author_id) + rendered)
                                 _reply(channel_id, token, msg, logger)
+                    elif cmd_line.startswith("!detail"):
+                        msg = detailCommandHandler(author_id, cmd_line)
+                        _reply(channel_id, token, msg, logger)
                     elif cmd_line.startswith("!delete"):
                         msg = deleteCommandHandler(author_id, cmd_line)
                         _reply(channel_id, token, msg, logger)
