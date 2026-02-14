@@ -21,16 +21,20 @@ import urllib.request
 
 from app.commands import parse_add_command
 from app.db import (
+    delete_task_for_bot,
     get_task_for_bot,
     insert_task,
     list_tasks_for_bot,
     list_tasks_paginated_for_bot,
     update_task_status_for_bot,
 )
-from app.list_renderer import render_task_list
+from app.list_renderer import render_task_card, render_task_list
 from app.startup_report import build_startup_report_message
 from app.ui import build_box, truncate_discord
 from bot.discord_client import load_env
+
+
+pending_delete: dict[int, str] = {}
 
 
 def _setup_logger() -> logging.Logger:
@@ -213,6 +217,17 @@ def _format_help(user_id: str | int | None) -> str:
             "!todo <id>",
             "```",
             "",
+            "🗑️ Delete (safe):",
+            "```txt",
+            "!delete <id>",
+            "```",
+            "```txt",
+            "!confirm <id>",
+            "```",
+            "```txt",
+            "!cancel <id>",
+            "```",
+            "",
             "📄 Templates:",
             "```txt",
             "!template add",
@@ -246,6 +261,118 @@ def _format_error(user_id: str | int | None) -> str:
     )
     msg = build_box("❌  FORMAT ERROR", body)
     return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _format_delete_failed(user_id: str | int | None, reason: str) -> str:
+    msg = build_box("⚠️  DELETE FAILED", reason)
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _format_delete_confirmation(user_id: str | int | None, task: dict) -> str:
+    body = "\n".join(
+        [
+            "Anda yakin ingin menghapus task berikut?",
+            "",
+            render_task_card(task),
+            "",
+            "Ketik:",
+            f"!confirm {int(task.get('id') or 0)}  → untuk menghapus",
+            f"!cancel {int(task.get('id') or 0)}   → untuk membatalkan",
+        ]
+    )
+    msg = build_box("⚠️  DELETE CONFIRMATION", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _format_delete_success(user_id: str | int | None, task: dict) -> str:
+    body = "\n".join(
+        [
+            "Task berikut berhasil dihapus:",
+            "",
+            render_task_card(task),
+        ]
+    )
+    msg = build_box("🗑️  TASK DELETED", body)
+    return truncate_discord(_mention_prefix(user_id) + msg)
+
+
+def _parse_task_id_arg(parts: list[str]) -> tuple[int | None, str | None]:
+    if len(parts) < 2:
+        return None, "Gunakan: !delete <task_id>"
+
+    raw_id = str(parts[1] or "").strip()
+    try:
+        task_id = int(raw_id)
+    except Exception:
+        return None, "Task ID harus angka. Contoh: !delete 3"
+
+    if task_id <= 0:
+        return None, "Task ID harus angka > 0."
+
+    return task_id, None
+
+
+def deleteCommandHandler(requester_user_id: str, raw_line: str) -> str:
+    parts = str(raw_line or "").strip().split()
+    task_id, err = _parse_task_id_arg(parts)
+    if err:
+        return _format_delete_failed(requester_user_id, err)
+
+    existing = get_task_for_bot(task_id)
+    if existing is None:
+        return _format_delete_failed(requester_user_id, f"Task dengan ID {task_id} tidak ditemukan.")
+
+    pending_delete[int(task_id)] = str(requester_user_id)
+    return _format_delete_confirmation(requester_user_id, existing)
+
+
+def confirmDeleteHandler(requester_user_id: str, raw_line: str) -> str:
+    parts = str(raw_line or "").strip().split()
+    task_id, err = _parse_task_id_arg(parts)
+    if err:
+        return _format_delete_failed(requester_user_id, "Gunakan: !confirm <task_id>")
+
+    owner = pending_delete.get(int(task_id))
+    if owner is None:
+        return _format_delete_failed(requester_user_id, "Tidak ada request delete pending untuk ID tersebut.")
+
+    if str(owner) != str(requester_user_id):
+        return _format_delete_failed(requester_user_id, "Anda tidak berhak mengkonfirmasi delete ini.")
+
+    existing = get_task_for_bot(task_id)
+    if existing is None:
+        pending_delete.pop(int(task_id), None)
+        return _format_delete_failed(requester_user_id, f"Task dengan ID {task_id} tidak ditemukan.")
+
+    try:
+        ok = delete_task_for_bot(task_id)
+    except Exception:
+        return _format_delete_failed(requester_user_id, "Gagal menghapus task. Coba lagi nanti.")
+    finally:
+        pending_delete.pop(int(task_id), None)
+
+    if not ok:
+        return _format_delete_failed(requester_user_id, "Gagal menghapus task (no changes).")
+
+    return _format_delete_success(requester_user_id, existing)
+
+
+def cancelDeleteHandler(requester_user_id: str, raw_line: str) -> str:
+    parts = str(raw_line or "").strip().split()
+    task_id, err = _parse_task_id_arg(parts)
+    if err:
+        return _format_delete_failed(requester_user_id, "Gunakan: !cancel <task_id>")
+
+    owner = pending_delete.get(int(task_id))
+    if owner is None:
+        return _format_delete_failed(requester_user_id, "Tidak ada request delete pending untuk ID tersebut.")
+
+    if str(owner) != str(requester_user_id):
+        return _format_delete_failed(requester_user_id, "Anda tidak berhak membatalkan delete ini.")
+
+    pending_delete.pop(int(task_id), None)
+    msg = build_box("✅  DELETE CANCELED", f"Delete untuk task ID {task_id} dibatalkan.")
+    return truncate_discord(_mention_prefix(requester_user_id) + msg)
 
 
 def _format_add_success(user_id: str | int | None, task_id: int, parsed: dict) -> str:
@@ -392,7 +519,7 @@ def run_polling_bot() -> None:
                 _sleep_seconds(5)
                 continue
 
-            new_messages: list[tuple[int, str]] = []
+            new_messages: list[tuple[int, str, str]] = []
             for msg in data:
                 try:
                     msg_id = int(msg.get("id") or 0)
@@ -406,6 +533,10 @@ def run_polling_bot() -> None:
                 if bool(author.get("bot")):
                     continue
 
+                author_id = str(author.get("id") or "")
+                if not author_id:
+                    continue
+
                 content = str(msg.get("content") or "")
 
                 cmd = content.strip().lower()
@@ -413,6 +544,9 @@ def run_polling_bot() -> None:
                     cmd.startswith("!add")
                     or cmd.startswith("!help")
                     or cmd.startswith("!list")
+                    or cmd.startswith("!delete")
+                    or cmd.startswith("!confirm")
+                    or cmd.startswith("!cancel")
                     or cmd.startswith("!progress")
                     or cmd.startswith("!done")
                     or cmd.startswith("!todo")
@@ -420,17 +554,17 @@ def run_polling_bot() -> None:
                 ):
                     continue
 
-                new_messages.append((msg_id, content))
+                new_messages.append((msg_id, author_id, content))
 
             new_messages.sort(key=lambda x: x[0])
 
-            for msg_id, content in new_messages:
+            for msg_id, author_id, content in new_messages:
                 try:
                     raw = str(content or "").strip()
                     cmd_line = raw.splitlines()[0].strip().lower() if raw else ""
 
                     if cmd_line == "!help":
-                        _reply(channel_id, token, _format_help(user_id), logger)
+                        _reply(channel_id, token, _format_help(author_id), logger)
                     elif cmd_line.startswith("!template"):
                         parts = cmd_line.split()
                         if len(parts) != 2:
@@ -522,8 +656,17 @@ def run_polling_bot() -> None:
                                     kind_for_hint=kind_norm,
                                 )
 
-                                msg = truncate_discord(_mention_prefix(user_id) + rendered)
+                                msg = truncate_discord(_mention_prefix(author_id) + rendered)
                                 _reply(channel_id, token, msg, logger)
+                    elif cmd_line.startswith("!delete"):
+                        msg = deleteCommandHandler(author_id, cmd_line)
+                        _reply(channel_id, token, msg, logger)
+                    elif cmd_line.startswith("!confirm"):
+                        msg = confirmDeleteHandler(author_id, cmd_line)
+                        _reply(channel_id, token, msg, logger)
+                    elif cmd_line.startswith("!cancel"):
+                        msg = cancelDeleteHandler(author_id, cmd_line)
+                        _reply(channel_id, token, msg, logger)
                     elif cmd_line.startswith("!progress") or cmd_line.startswith("!done") or cmd_line.startswith("!todo"):
                         parts = cmd_line.split()
                         if len(parts) != 2:
@@ -578,11 +721,11 @@ def run_polling_bot() -> None:
                                 logger,
                             )
                     else:
-                        _reply(channel_id, token, _format_error(user_id), logger)
+                        _reply(channel_id, token, _format_error(author_id), logger)
                 except Exception as e:
                     logger.exception("Failed processing command: %s", e)
                     body = "Gagal memproses perintah. Coba lagi nanti."
-                    _reply(channel_id, token, truncate_discord(_mention_prefix(user_id) + build_box("❌  ERROR", body)), logger)
+                    _reply(channel_id, token, truncate_discord(_mention_prefix(author_id) + build_box("❌  ERROR", body)), logger)
 
                 last_processed_id = msg_id
                 _write_last_message_id(last_processed_id)

@@ -224,3 +224,17 @@ def list_tasks_paginated_for_bot(
         "total_all": total_all,
     }
     return tasks, meta
+
+
+def delete_task_for_bot(task_id: int) -> bool:
+    """Hard delete a task by id.
+
+    Returns True if a row was deleted, otherwise False.
+    """
+
+    task_id = int(task_id)
+    with get_connection() as conn:
+        conn.execute("BEGIN")
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+        return int(cur.rowcount or 0) > 0

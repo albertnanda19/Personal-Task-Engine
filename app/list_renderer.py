@@ -72,6 +72,10 @@ def _task_card(task: dict) -> str:
     return "\n".join([line1, line2])
 
 
+def render_task_card(task: dict) -> str:
+    return _task_card(task)
+
+
 def render_task_list(
     *,
     tasks: list[dict],
